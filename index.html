@@ -1,0 +1,584 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>压缩归档工具</title>
+<style>
+  :root {
+    --bg: #1e1e2e; --panel: #27273a; --panel2: #2f2f45; --border: #3a3a55;
+    --fg: #e4e4f0; --muted: #9a9ab0; --accent: #6c8cff; --accent2: #84a0ff;
+    --ok: #4cd07d; --warn: #ffb454; --err: #ff6b6b; --mono: Consolas, "Courier New", monospace;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: var(--bg); color: var(--fg); font-family: "Segoe UI", "Microsoft YaHei", sans-serif; font-size: 14px; height: 100vh; display: flex; flex-direction: column; overflow: hidden; }
+  header { display: flex; align-items: center; gap: 14px; padding: 10px 18px; background: var(--panel); border-bottom: 1px solid var(--border); }
+  header h1 { font-size: 16px; font-weight: 600; }
+  .badge { padding: 3px 12px; border-radius: 12px; font-size: 12px; background: var(--panel2); color: var(--muted); border: 1px solid var(--border); }
+  .badge.running { background: rgba(255,180,84,.15); color: var(--warn); border-color: var(--warn); }
+  .badge.finished { background: rgba(76,208,125,.15); color: var(--ok); border-color: var(--ok); }
+  .badge.failed, .badge.stopped { background: rgba(255,107,107,.15); color: var(--err); border-color: var(--err); }
+  .spacer { flex: 1; }
+  button { background: var(--panel2); color: var(--fg); border: 1px solid var(--border); border-radius: 6px; padding: 6px 14px; cursor: pointer; font-size: 13px; transition: filter .15s; }
+  button:hover:not(:disabled) { filter: brightness(1.2); }
+  button:disabled { opacity: .45; cursor: not-allowed; }
+  button.primary { background: var(--accent); color: #fff; border-color: var(--accent); }
+  button.danger { background: rgba(255,107,107,.12); color: var(--err); border-color: var(--err); }
+  nav { display: flex; gap: 4px; padding: 8px 18px 0; background: var(--panel); border-bottom: 1px solid var(--border); }
+  nav button { border-radius: 8px 8px 0 0; border-bottom: none; background: transparent; color: var(--muted); padding: 8px 18px; }
+  nav button.active { background: var(--bg); color: var(--accent2); border-color: var(--border); font-weight: 600; }
+  main { flex: 1; display: flex; flex-direction: column; overflow: hidden; }
+  .tab { display: none; flex: 1; flex-direction: column; overflow-y: auto; padding: 18px; }
+  .tab.active { display: flex; }
+  .form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px 18px; max-width: 860px; }
+  .field { display: flex; flex-direction: column; gap: 5px; }
+  .field.full { grid-column: 1 / -1; }
+  .field label { font-size: 12px; color: var(--muted); }
+  .field input[type=text], .field input[type=password], .field input[type=number], .field select {
+    background: var(--panel2); color: var(--fg); border: 1px solid var(--border); border-radius: 6px; padding: 7px 10px; font-size: 13px; outline: none; width: 100%;
+  }
+  .field input:focus, .field select:focus { border-color: var(--accent); }
+  .input-row { display: flex; gap: 6px; }
+  .input-row input { flex: 1; }
+  .input-row button { white-space: nowrap; }
+  .switch-row { display: flex; align-items: center; gap: 10px; padding: 6px 0; }
+  .switch { position: relative; width: 40px; height: 22px; flex-shrink: 0; }
+  .switch input { opacity: 0; width: 0; height: 0; }
+  .switch .slider { position: absolute; inset: 0; background: var(--border); border-radius: 11px; transition: .2s; cursor: pointer; }
+  .switch .slider::before { content: ""; position: absolute; width: 16px; height: 16px; left: 3px; top: 3px; background: #fff; border-radius: 50%; transition: .2s; }
+  .switch input:checked + .slider { background: var(--accent); }
+  .switch input:checked + .slider::before { transform: translateX(18px); }
+  .actions { margin-top: 18px; display: flex; gap: 10px; align-items: center; }
+  .hint { font-size: 12px; color: var(--muted); line-height: 1.6; }
+  .warn-box { background: rgba(255,107,107,.1); border: 1px solid rgba(255,107,107,.4); color: var(--err); border-radius: 8px; padding: 10px 14px; font-size: 12px; margin-bottom: 16px; }
+  .msg { font-size: 12px; min-height: 18px; } .msg.err { color: var(--err); } .msg.ok { color: var(--ok); }
+  #work-area { border-top: 1px solid var(--border); background: var(--panel); padding: 12px 18px; }
+  .progress-wrap { display: flex; align-items: center; gap: 12px; }
+  .progress-bar { flex: 1; height: 8px; background: var(--panel2); border-radius: 4px; overflow: hidden; }
+  .progress-fill { height: 100%; width: 0; background: linear-gradient(90deg, var(--accent), var(--accent2)); transition: width .3s; border-radius: 4px; }
+  .progress-text { font-size: 12px; color: var(--muted); min-width: 220px; white-space: nowrap; }
+  .log-toolbar { display: flex; gap: 8px; margin: 10px 0 6px; align-items: center; }
+  .log-toolbar button { padding: 3px 10px; font-size: 12px; }
+  #log { flex: 1; min-height: 120px; max-height: 34vh; background: #16161f; border: 1px solid var(--border); border-radius: 8px; overflow-y: auto; font-family: var(--mono); font-size: 12.5px; line-height: 1.6; padding: 10px 12px; white-space: pre-wrap; word-break: break-all; }
+  #log .ok { color: var(--ok); } #log .err { color: var(--err); } #log .warn { color: var(--warn); }
+  .index-panel { display: flex; flex-direction: column; gap: 14px; max-width: 1000px; }
+  .mode-tabs { display: flex; gap: 6px; }
+  .mode-tabs button { border-radius: 6px; } .mode-tabs button.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+  .filter-row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+  .filter-row input, .filter-row select { background: var(--panel2); color: var(--fg); border: 1px solid var(--border); border-radius: 6px; padding: 6px 9px; font-size: 12.5px; outline: none; }
+  #index-result { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 14px; font-size: 12.5px; overflow-x: auto; }
+  table { border-collapse: collapse; width: 100%; font-size: 12.5px; }
+  th, td { text-align: left; padding: 6px 10px; border-bottom: 1px solid var(--border); white-space: nowrap; }
+  th { color: var(--muted); font-weight: 600; position: sticky; top: 0; background: var(--panel); }
+  td.mono { font-family: var(--mono); font-size: 11.5px; }
+  .cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 10px; }
+  .card { background: var(--panel2); border: 1px solid var(--border); border-radius: 8px; padding: 12px; }
+  .card .k { font-size: 11px; color: var(--muted); }
+  .card .v { font-size: 16px; font-weight: 600; margin-top: 4px; }
+  .empty { color: var(--muted); text-align: center; padding: 30px; }
+  .pager { display: flex; gap: 8px; align-items: center; margin-top: 8px; }
+  .hidden { display: none !important; }
+</style>
+</head>
+<body>
+<header>
+  <h1>压缩归档工具</h1>
+  <span id="badge" class="badge">空闲</span>
+  <span id="badgeType"></span>
+  <div class="spacer"></div>
+  <button id="btnStop" class="danger" disabled>停止任务</button>
+</header>
+
+<nav id="tabs">
+  <button data-tab="compress" class="active">压缩</button>
+  <button data-tab="clean">清理</button>
+  <button data-tab="decompress">解压</button>
+  <button data-tab="index">索引</button>
+</nav>
+
+<main>
+  <!-- 压缩 -->
+  <section id="tab-compress" class="tab active">
+    <div class="form-grid">
+      <div class="field full">
+        <label>目标目录（待压缩的源目录）</label>
+        <div class="input-row">
+          <input type="text" id="c_target" placeholder="例如: D:\data">
+          <button id="c_target_btn" class="hidden">浏览…</button>
+        </div>
+      </div>
+      <div class="field">
+        <label>Bandizip 安装目录</label>
+        <input type="text" id="c_bz" value="C:\Program Files\Bandizip">
+      </div>
+      <div class="field">
+        <label>压缩密码（留空表示不加密）</label>
+        <div class="input-row">
+          <input type="password" id="c_pwd" autocomplete="off">
+          <button type="button" id="c_pwd_vis" title="显示/隐藏密码">显示</button>
+        </div>
+      </div>
+      <div class="field">
+        <label>确认密码</label>
+        <div class="input-row">
+          <input type="password" id="c_pwd2" autocomplete="off">
+          <button type="button" id="c_pwd2_vis" title="显示/隐藏密码">显示</button>
+        </div>
+      </div>
+      <div class="field">
+        <label>单包体积上限 (GB)</label>
+        <input type="number" id="c_maxgb" value="3.9" min="0.001" step="0.1">
+      </div>
+      <div class="field">
+        <label>压缩失败重试次数</label>
+        <input type="number" id="c_retry" value="3" min="1" max="10">
+      </div>
+      <div class="field">
+        <label>校验线程数（默认 2）</label>
+        <input type="number" id="c_verify" min="1" max="8">
+      </div>
+      <div class="field">
+        <label>哈希计算线程数（默认按 CPU 核数）</label>
+        <input type="number" id="c_hash" min="1" max="16">
+      </div>
+      <div class="field full">
+        <div class="switch-row">
+          <label class="switch"><input type="checkbox" id="c_hashidx" checked><span class="slider"></span></label>
+          <span>启用哈希判重与索引入库（防止重复归档）</span>
+        </div>
+        <div class="switch-row">
+          <label class="switch"><input type="checkbox" id="c_delsrc" checked><span class="slider"></span></label>
+          <span>压缩校验通过后删除源文件</span>
+        </div>
+      </div>
+    </div>
+    <div class="actions">
+      <button id="btnCompress" class="primary">开始压缩</button>
+      <span class="msg" id="msgCompress"></span>
+    </div>
+  </section>
+
+  <!-- 清理 -->
+  <section id="tab-clean" class="tab">
+    <div class="warn-box"><b>删除即进入 Windows 回收站（可恢复）</b>：同目录内容哈希相同的重复副本、孤立的 0 字节文件一律删除。建议先用「预览模式」查看将要清理的内容。</div>
+    <div class="form-grid">
+      <div class="field full">
+        <label>目标目录</label>
+        <div class="input-row">
+          <input type="text" id="cl_target">
+          <button id="cl_target_btn" class="hidden">浏览…</button>
+        </div>
+        <div class="hint">内容哈希去重 + 孤立 0 字节清理：同目录内先比文件大小、再算哈希，大小相同且哈希相同者保留一个（优先无 <code>(N)</code> 后缀），其余删除进回收站。</div>
+      </div>
+      <div class="field full">
+        <div class="switch-row">
+          <label class="switch"><input type="checkbox" id="cl_preview"><span class="slider"></span></label>
+          <span>预览模式（只统计、不修改文件，安全）</span>
+        </div>
+      </div>
+    </div>
+    <div class="actions">
+      <button id="btnClean" class="primary">开始清理</button>
+      <span class="msg" id="msgClean"></span>
+    </div>
+  </section>
+
+  <!-- 解压 -->
+  <section id="tab-decompress" class="tab">
+    <div class="form-grid">
+      <div class="field full">
+        <label>压缩包源目录（含 .7z）</label>
+        <div class="input-row">
+          <input type="text" id="d_src">
+          <button id="d_src_btn" class="hidden">浏览…</button>
+        </div>
+      </div>
+      <div class="field">
+        <label>解压输出目录（留空 = 源目录的上级）</label>
+        <input type="text" id="d_out">
+      </div>
+      <div class="field">
+        <label>Bandizip 安装目录</label>
+        <input type="text" id="d_bz" value="C:\Program Files\Bandizip">
+      </div>
+      <div class="field">
+        <label>压缩密码（留空表示不加密）</label>
+        <input type="password" id="d_pwd" autocomplete="off">
+      </div>
+      <div class="field">
+        <label>重试次数</label>
+        <input type="number" id="d_retry" value="3" min="1" max="10">
+      </div>
+      <div class="field full">
+        <div class="switch-row">
+          <label class="switch"><input type="checkbox" id="d_del" checked><span class="slider"></span></label>
+          <span>解压成功后删除 .7z 压缩包</span>
+        </div>
+      </div>
+    </div>
+    <div class="actions">
+      <button id="btnDecompress" class="primary">开始解压</button>
+      <span class="msg" id="msgDecompress"></span>
+    </div>
+  </section>
+
+  <!-- 索引 -->
+  <section id="tab-index" class="tab">
+    <div class="index-panel">
+      <div class="field">
+        <label>索引库 (.db) 路径</label>
+        <div class="input-row">
+          <input type="text" id="i_db">
+          <button id="i_db_btn" class="hidden">选择…</button>
+        </div>
+        <div class="hint">索引库位于脚本目录下，命名为 <code>&lt;目标目录名&gt;_dedup_index.db</code>。首次运行压缩后生成。</div>
+      </div>
+      <div class="mode-tabs">
+        <button data-mode="summary" class="active">概览</button>
+        <button data-mode="archives">按包统计</button>
+        <button data-mode="records">记录列表</button>
+        <button data-mode="duplicates">内容重复</button>
+      </div>
+      <div class="filter-row" id="filterRow" style="display:none">
+        <input type="text" id="f_path" placeholder="路径关键字">
+        <input type="text" id="f_archive" placeholder="包名关键字">
+        <input type="text" id="f_hash" placeholder="哈希前缀">
+        <input type="number" id="f_minsize" placeholder="最小大小(B)" style="width:110px">
+        <select id="f_sort">
+          <option value="path">按路径</option>
+          <option value="size">按大小</option>
+          <option value="time">按时间</option>
+          <option value="archive">按包</option>
+        </select>
+        <input type="number" id="f_limit" value="100" style="width:90px" title="每页条数">
+        <button id="btnQuery" class="primary">查询</button>
+      </div>
+      <div class="msg" id="msgIndex"></div>
+      <div id="index-result"><div class="empty">请选择索引库后查询</div></div>
+      <div class="pager" id="pager" style="display:none">
+        <button id="btnPrev">上一页</button>
+        <span id="pageInfo"></span>
+        <button id="btnNext">下一页</button>
+      </div>
+    </div>
+  </section>
+
+  <!-- 工作区：进度 + 日志 -->
+  <div id="work-area">
+    <div class="progress-wrap">
+      <div class="progress-bar"><div class="progress-fill" id="progressFill"></div></div>
+      <span class="progress-text" id="progressText">空闲</span>
+    </div>
+    <div class="log-toolbar">
+      <span class="hint">任务日志</span>
+      <div class="spacer"></div>
+      <button id="btnAutoScroll" title="开关自动滚动">自动滚动: 开</button>
+      <button id="btnClearLog">清空</button>
+      <button id="btnCopyLog">复制</button>
+    </div>
+    <div id="log"></div>
+  </div>
+</main>
+
+<script>
+"use strict";
+// ---------- 工具 ----------
+const $ = id => document.getElementById(id);
+let lastSeq = parseInt(sessionStorage.getItem("lastSeq") || "0", 10);
+let autoScroll = true;
+let running = false;
+let currentMode = "summary";
+let recordsPage = 0;
+let es = null;
+
+function setMsg(id, text, type) {
+  const el = $(id);
+  el.textContent = text || "";
+  el.className = "msg " + (type || "");
+}
+function humanSize(b) {
+  if (b == null || isNaN(b)) return "-";
+  const u = ["B","KB","MB","GB","TB"];
+  let i = 0; while (b >= 1024 && i < u.length-1) { b /= 1024; i++; }
+  return b.toFixed(b >= 100 || i === 0 ? 0 : 1) + " " + u[i];
+}
+function esc(s) {
+  const d = document.createElement("div");
+  d.textContent = s == null ? "" : String(s);
+  return d.innerHTML;
+}
+function appendLog(text) {
+  const el = $("log");
+  const div = document.createElement("div");
+  div.textContent = text;
+  el.appendChild(div);
+  while (el.children.length > 3000) el.removeChild(el.firstChild);
+  if (autoScroll) el.scrollTop = el.scrollHeight;
+}
+
+// ---------- 状态徽标 ----------
+const STATUS_TEXT = { idle: "空闲", running: "运行中", finished: "完成", failed: "失败", stopped: "已停止" };
+function renderState(st) {
+  const badge = $("badge");
+  badge.textContent = STATUS_TEXT[st.status] || st.status;
+  badge.className = "badge " + st.status;
+  running = st.status === "running";
+  $("badgeType").textContent = running ? ("任务: " + ({compress: "压缩", clean: "清理", decompress: "解压"}[st.type] || st.type)) : (st.error ? "错误: " + st.error : "");
+  const p = st.progress || {};
+  if (st.status === "running") {
+    let txt = "阶段: " + (p.phase || "");
+    if (p.current != null && p.total) txt += `  ${p.current}/${p.total}`;
+    if (p.percent != null) txt += `  (${p.percent}%)`;
+    $("progressText").textContent = txt.trim() || "运行中…";
+    $("progressFill").style.width = (p.percent != null ? p.percent : 0) + "%";
+  } else {
+    let txt = st.status === "idle" ? "空闲" : (STATUS_TEXT[st.status] || st.status);
+    if (st.result) {
+      if (st.result.success != null) txt += `  成功 ${st.result.success} · 失败 ${st.result.fail}`;
+      if (st.result.deleted != null) txt += `  删除进回收站 ${st.result.deleted} 个`;
+      if (st.result.error) txt += "  " + st.result.error;
+    }
+    $("progressText").textContent = txt;
+    const pct = st.status === "finished" ? 100 : 0;
+    $("progressFill").style.width = pct + "%";
+  }
+}
+
+// ---------- 日志 ----------
+function onLog(item) {
+  if (item.seq <= lastSeq) return;
+  lastSeq = item.seq;
+  sessionStorage.setItem("lastSeq", lastSeq);
+  appendLog(item.text);
+}
+function onProgress(p) {
+  if (!running) return;
+  let txt = "阶段: " + (p.phase || "");
+  if (p.current != null && p.total) txt += `  ${p.current}/${p.total}`;
+  if (p.percent != null) txt += `  (${p.percent}%)`;
+  $("progressText").textContent = txt;
+  $("progressFill").style.width = (p.percent != null ? p.percent : 0) + "%";
+}
+
+// ---------- SSE ----------
+function connectSSE() {
+  if (es) { es.close(); es = null; }
+  es = new EventSource("/api/events?since=" + lastSeq);
+  es.addEventListener("log", e => onLog(JSON.parse(e.data)));
+  es.addEventListener("progress", e => onProgress(JSON.parse(e.data)));
+  es.addEventListener("task_status", e => renderState(JSON.parse(e.data)));
+  es.onerror = () => {
+    es.close(); es = null;
+    setTimeout(() => { fetchState(); setTimeout(connectSSE, 2000); }, 500);
+  };
+}
+function fetchState() {
+  fetch("/api/state").then(r => r.json()).then(j => {
+    if (!j.ok) return;
+    const st = j.data;
+    renderState(st);
+    (st.log || []).forEach(onLog);
+  }).catch(() => {});
+}
+function applyDefaultWorkers() {
+  // 本地兜底：接口不可用时按浏览器报告的 CPU 核数估算，保证表单有可见默认值
+  const hc = navigator.hardwareConcurrency || 0;
+  const hashDefault = hc ? Math.min(hc, 8) : 4;
+  if (!$("c_hash").value) $("c_hash").value = hashDefault;
+  if (!$("c_verify").value) $("c_verify").value = 2;
+}
+function init() {
+  fetchState();
+  connectSSE();
+  applyDefaultWorkers();
+  fetch("/api/config/defaults").then(r => r.json()).then(j => {
+    if (!j.ok || !j.data) return;
+    if (!$("c_hash").value) $("c_hash").value = j.data.hash_workers;
+    if (!$("c_verify").value) $("c_verify").value = j.data.verify_workers;
+  }).catch(() => {});
+}
+
+// ---------- 任务提交 ----------
+function submitTask(url, cfg, msgId, doneCb) {
+  setMsg(msgId, "提交中…", "");
+  fetch(url, {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(cfg)
+  }).then(r => r.status === 409 ? Promise.reject({conflict: true}) : r.json()).then(j => {
+    if (j.ok) { setMsg(msgId, "任务已启动", "ok"); if (doneCb) doneCb(); }
+    else setMsg(msgId, j.error || "启动失败", "err");
+  }).catch(e => {
+    setMsg(msgId, e && e.conflict ? "已有任务在运行，请等待或先停止" : "请求失败", "err");
+  });
+}
+
+// ---------- Tab 切换 ----------
+$("tabs").addEventListener("click", e => {
+  const btn = e.target.closest("button[data-tab]");
+  if (!btn) return;
+  document.querySelectorAll("#tabs button").forEach(b => b.classList.toggle("active", b === btn));
+  document.querySelectorAll(".tab").forEach(t => t.classList.toggle("active", t.id === "tab-" + btn.dataset.tab));
+});
+
+// ---------- 按钮事件 ----------
+$("btnCompress").onclick = () => {
+  const pwd = $("c_pwd").value;
+  if (pwd !== $("c_pwd2").value) {
+    setMsg("msgCompress", "两次输入的密码不一致，请重新确认", "err");
+    return;
+  }
+  submitTask("/api/task/compress", {
+    target_dir: $("c_target").value.trim(),
+    bandizip_dir: $("c_bz").value.trim(),
+    password: pwd,
+    max_package_size_gb: parseFloat($("c_maxgb").value) || 3.9,
+    max_retry: parseInt($("c_retry").value) || 3,
+    verify_workers: parseInt($("c_verify").value) || undefined,
+    hash_workers: parseInt($("c_hash").value) || undefined,
+    enable_hash_index: $("c_hashidx").checked,
+    delete_source: $("c_delsrc").checked
+  }, "msgCompress");
+};
+$("btnClean").onclick = () => {
+  submitTask("/api/task/clean", {
+    target_dir: $("cl_target").value.trim(),
+    preview: $("cl_preview").checked
+  }, "msgClean");
+};
+$("btnDecompress").onclick = () => {
+  submitTask("/api/task/decompress", {
+    source_dir: $("d_src").value.trim(),
+    output_dir: $("d_out").value.trim() || null,
+    bandizip_dir: $("d_bz").value.trim(),
+    password: $("d_pwd").value,
+    max_retry: parseInt($("d_retry").value) || 3,
+    delete_after_extract: $("d_del").checked
+  }, "msgDecompress");
+};
+$("btnStop").onclick = () => {
+  fetch("/api/task/stop", { method: "POST" }).then(r => r.json());
+};
+
+// ---------- 压缩密码显示/隐藏切换 ----------
+function bindPwdToggle(inputId, btnId) {
+  const input = $(inputId), btn = $(btnId);
+  if (!input || !btn) return;
+  btn.onclick = () => {
+    const show = input.type === "password";
+    input.type = show ? "text" : "password";
+    btn.textContent = show ? "隐藏" : "显示";
+  };
+}
+bindPwdToggle("c_pwd", "c_pwd_vis");
+bindPwdToggle("c_pwd2", "c_pwd2_vis");
+
+// ---------- 目录浏览（pywebview 模式自动显示按钮） ----------
+const hasPick = typeof window.pywebview !== "undefined" && window.pywebview.api && window.pywebview.api.pick_directory;
+[["c_target_btn","c_target"],["cl_target_btn","cl_target"],["d_src_btn","d_src"],["i_db_btn","i_db"]].forEach(([btnId, inputId]) => {
+  const btn = $(btnId);
+  if (hasPick && btn) {
+    btn.classList.remove("hidden");
+    btn.onclick = async () => {
+      const r = await window.pywebview.api.pick_directory();
+      if (r) $(inputId).value = r;
+    };
+  }
+});
+
+// ---------- 索引 ----------
+const modeTabs = document.querySelectorAll(".mode-tabs button");
+modeTabs.forEach(b => b.onclick = () => {
+  modeTabs.forEach(x => x.classList.toggle("active", x === b));
+  currentMode = b.dataset.mode;
+  $("filterRow").style.display = currentMode === "records" ? "flex" : "none";
+  $("pager").style.display = currentMode === "records" ? "flex" : "none";
+  recordsPage = 0;
+  queryIndex();
+});
+$("btnQuery").onclick = () => { recordsPage = 0; queryIndex(); };
+$("btnPrev").onclick = () => { if (recordsPage > 0) { recordsPage--; queryIndex(); } };
+$("btnNext").onclick = () => { recordsPage++; queryIndex(); };
+
+function queryIndex() {
+  const db = $("i_db").value.trim();
+  const base = `/api/index/${currentMode}?db=${encodeURIComponent(db)}`;
+  if (currentMode === "records") {
+    const lim = parseInt($("f_limit").value) || 100;
+    const off = recordsPage * lim;
+    const q = `${base}&filter_path=${esc($("f_path").value)}&filter_archive=${esc($("f_archive").value)}` +
+      `&filter_hash=${esc($("f_hash").value)}&min_size=${$("f_minsize").value || ""}&sort=${$("f_sort").value}` +
+      `&limit=${lim}&offset=${off}`;
+    fetch(q).then(r => r.json()).then(j => {
+      if (!j.ok) { renderIndexErr(j.error); return; }
+      renderRecords(j.data, lim);
+    }).catch(() => renderIndexErr("请求失败"));
+    return;
+  }
+  fetch(base).then(r => r.json()).then(j => {
+    if (!j.ok) { renderIndexErr(j.error); return; }
+    if (currentMode === "summary") renderSummary(j.data);
+    else if (currentMode === "archives") renderArchives(j.data);
+    else renderDuplicates(j.data);
+  }).catch(() => renderIndexErr("请求失败"));
+}
+function renderIndexErr(err) {
+  $("index-result").innerHTML = `<div class="empty">${esc(err || "查询失败")}</div>`;
+  $("pager").style.display = "none";
+}
+function renderSummary(d) {
+  const cards = [
+    ["文件记录", d.total], ["原始总大小", humanSize(d.size)], ["涉及压缩包", d.archives],
+    ["平均文件大小", humanSize(d.avg)], ["首次打包", d.first || "-"], ["最近打包", d.last || "-"]
+  ].map(([k, v]) => `<div class="card"><div class="k">${k}</div><div class="v">${esc(v)}</div></div>`).join("");
+  let extra = "";
+  if (d.top_files && d.top_files.length) {
+    extra += "<h3 style='margin:14px 0 6px'>最大的 5 个文件</h3><table><tr><th>大小</th><th>路径</th><th>压缩包</th></tr>" +
+      d.top_files.map(f => `<tr><td class='mono'>${humanSize(f.size)}</td><td class='mono'>${esc(f.rel_path)}</td><td>${esc(f.archive)}</td></tr>`).join("") + "</table>";
+  }
+  if (d.recent_archives && d.recent_archives.length) {
+    extra += "<h3 style='margin:14px 0 6px'>最近的压缩包</h3><table><tr><th>包名</th><th>文件数</th><th>原大小</th><th>时间</th></tr>" +
+      d.recent_archives.map(a => `<tr><td>${esc(a.archive)}</td><td>${a.cnt}</td><td class='mono'>${humanSize(a.size)}</td><td class='mono'>${esc(a.ts)}</td></tr>`).join("") + "</table>";
+  }
+  $("index-result").innerHTML = `<div class="cards">${cards}</div>${extra}`;
+}
+function renderArchives(d) {
+  if (!d.rows.length) { $("index-result").innerHTML = '<div class="empty">索引为空</div>'; return; }
+  $("index-result").innerHTML = "<table><tr><th>压缩包</th><th>文件数</th><th>原始大小</th><th>打包时间</th></tr>" +
+    d.rows.map(r => `<tr><td>${esc(r.archive)}</td><td>${r.cnt}</td><td class='mono'>${humanSize(r.size)}</td><td class='mono'>${esc(r.ts)}</td></tr>`).join("") +
+    `<tr><td><b>合计</b></td><td><b>${d.totals.cnt}</b></td><td class='mono'><b>${humanSize(d.totals.size)}</b></td><td></td></tr></table>`;
+}
+function renderRecords(d, limit) {
+  if (!d.rows.length) { $("index-result").innerHTML = `<div class="empty">匹配 ${d.matched} 条，无显示记录</div>`; $("pager").style.display = "none"; return; }
+  $("pageInfo").textContent = `匹配 ${d.matched} 条 · 第 ${d.offset+1}-${d.offset+d.rows.length} 条`;
+  $("pager").style.display = "flex";
+  $("btnPrev").disabled = recordsPage === 0;
+  $("btnNext").disabled = d.offset + d.rows.length >= d.matched;
+  $("index-result").innerHTML = "<table><tr><th>原始大小</th><th>哈希(前16位)</th><th>路径</th><th>压缩包</th><th>打包时间</th></tr>" +
+    d.rows.map(r => `<tr><td class='mono'>${humanSize(r.size)}</td><td class='mono'>${esc(r.hash.slice(0,16))}</td><td class='mono' style='white-space:normal'>${esc(r.rel_path)}</td><td>${esc(r.archive)}</td><td class='mono'>${esc(r.packed_at)}</td></tr>`).join("") + "</table>";
+}
+function renderDuplicates(d) {
+  if (!d.groups.length) { $("index-result").innerHTML = '<div class="empty">没有内容重复的文件</div>'; return; }
+  let html = `<p>发现 <b>${d.groups.length}</b> 组内容相同的文件：</p>`;
+  d.groups.forEach(g => {
+    html += `<div style="margin:10px 0"><b>[${esc(g.hash.slice(0,16))}]</b> ${humanSize(g.size)} 共 ${g.count} 个路径` +
+      g.rows.map(r => `<div style="margin-left:18px" class="mono">${esc(r.rel_path)}  <span style="color:var(--muted)">← ${esc(r.archive)}</span></div>`).join("") + "</div>";
+  });
+  $("index-result").innerHTML = html;
+}
+
+// ---------- 日志工具按钮 ----------
+$("btnAutoScroll").onclick = () => {
+  autoScroll = !autoScroll;
+  $("btnAutoScroll").textContent = "自动滚动: " + (autoScroll ? "开" : "关");
+  if (autoScroll) $("log").scrollTop = $("log").scrollHeight;
+};
+$("btnClearLog").onclick = () => { $("log").innerHTML = ""; };
+$("btnCopyLog").onclick = () => {
+  navigator.clipboard.writeText($("log").innerText).then(() => setMsg("msgCopy", "已复制", "ok"));
+};
+
+// ---------- 启动 ----------
+init();
+</script>
+</body>
+</html>

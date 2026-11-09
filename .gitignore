@@ -1,0 +1,7 @@
+__pycache__/
+*.pyc
+_dedup_test/
+_dedup_test2/
+.screenshots/
+*_dedup_index.db
+.trae/
