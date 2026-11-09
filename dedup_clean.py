@@ -277,14 +277,19 @@ def dedup_clean(target_dir, preview=False, log_cb=None, stop_event=None, hash_wo
                         safe_print(f"    删除失败（无回收站支持或操作取消）: {p.relative_to(target)}")
                 except OSError as e:
                     safe_print(f"    删除失败: {p.relative_to(target)} ({e})")
-            # 无论是否成功删除，被删文件的哈希都不再进入复用缓存
-            rel_delete = p.relative_to(target).as_posix()
-            hash_map.pop(rel_delete, None)
+            # 执行模式：被删文件的哈希不再进入复用缓存。
+            # 预览模式：不删除文件，缓存保留全量 hash（能力复用 = 补全快照，供压缩直接复用）
+            if not preview:
+                rel_delete = p.relative_to(target).as_posix()
+                hash_map.pop(rel_delete, None)
 
     # 五、将保留文件哈希写盘，供压缩判重阶段复用（能力复用）
     cache_file = hash_cache.cache_path(target_dir)
     hash_cache.write_cache(cache_file, hash_map)
-    safe_print(f"已保存 {len(hash_map)} 个文件的哈希缓存: {cache_file}")
+    if preview:
+        safe_print(f"已保存 {len(hash_map)} 个文件的全量 hash 快照（预览，未删除文件）: {cache_file}")
+    else:
+        safe_print(f"已保存 {len(hash_map)} 个文件的哈希缓存: {cache_file}")
 
     return deleted
 
