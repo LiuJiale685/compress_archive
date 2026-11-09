@@ -90,15 +90,44 @@
 </header>
 
 <nav id="tabs">
-  <button data-tab="compress" class="active">压缩</button>
-  <button data-tab="clean">清理</button>
+  <button data-tab="clean" class="active">清理</button>
+  <button data-tab="compress">压缩</button>
   <button data-tab="decompress">解压</button>
   <button data-tab="index">索引</button>
 </nav>
 
 <main>
+  <!-- 清理 -->
+  <section id="tab-clean" class="tab active">
+    <div class="warn-box"><b>删除即进入 Windows 回收站（可恢复）</b>：同目录内容哈希相同的重复副本、孤立的 0 字节文件一律删除。建议先用「预览模式」查看将要清理的内容。</div>
+    <div class="form-grid">
+      <div class="field full">
+        <label>目标目录</label>
+        <div class="input-row">
+          <input type="text" id="cl_target">
+          <button id="cl_target_btn" class="hidden">浏览…</button>
+        </div>
+        <div class="hint">内容哈希去重 + 孤立 0 字节清理：同目录内先比文件大小、再算哈希，大小相同且哈希相同者保留一个（优先无 <code>(N)</code> 后缀），其余删除进回收站。</div>
+      </div>
+      <div class="field">
+        <label>哈希计算线程数（默认按 CPU 核数）</label>
+        <input type="number" id="cl_hash" min="1" max="16">
+      </div>
+      <div class="field full">
+        <div class="switch-row">
+          <label class="switch"><input type="checkbox" id="cl_preview"><span class="slider"></span></label>
+          <span>预览模式（只统计、不修改文件，安全）</span>
+        </div>
+      </div>
+    </div>
+    <div class="actions">
+      <button id="btnClean" class="primary">开始清理</button>
+      <span class="msg" id="msgClean"></span>
+    </div>
+  </section>
+
   <!-- 压缩 -->
-  <section id="tab-compress" class="tab active">
+  <section id="tab-compress" class="tab">
     <div class="form-grid">
       <div class="field full">
         <label>目标目录（待压缩的源目录）</label>
@@ -155,31 +184,6 @@
     <div class="actions">
       <button id="btnCompress" class="primary">开始压缩</button>
       <span class="msg" id="msgCompress"></span>
-    </div>
-  </section>
-
-  <!-- 清理 -->
-  <section id="tab-clean" class="tab">
-    <div class="warn-box"><b>删除即进入 Windows 回收站（可恢复）</b>：同目录内容哈希相同的重复副本、孤立的 0 字节文件一律删除。建议先用「预览模式」查看将要清理的内容。</div>
-    <div class="form-grid">
-      <div class="field full">
-        <label>目标目录</label>
-        <div class="input-row">
-          <input type="text" id="cl_target">
-          <button id="cl_target_btn" class="hidden">浏览…</button>
-        </div>
-        <div class="hint">内容哈希去重 + 孤立 0 字节清理：同目录内先比文件大小、再算哈希，大小相同且哈希相同者保留一个（优先无 <code>(N)</code> 后缀），其余删除进回收站。</div>
-      </div>
-      <div class="field full">
-        <div class="switch-row">
-          <label class="switch"><input type="checkbox" id="cl_preview"><span class="slider"></span></label>
-          <span>预览模式（只统计、不修改文件，安全）</span>
-        </div>
-      </div>
-    </div>
-    <div class="actions">
-      <button id="btnClean" class="primary">开始清理</button>
-      <span class="msg" id="msgClean"></span>
     </div>
   </section>
 
@@ -385,6 +389,7 @@ function applyDefaultWorkers() {
   const hc = navigator.hardwareConcurrency || 0;
   const hashDefault = hc ? Math.min(hc, 8) : 4;
   if (!$("c_hash").value) $("c_hash").value = hashDefault;
+  if (!$("cl_hash").value) $("cl_hash").value = hashDefault;
   if (!$("c_verify").value) $("c_verify").value = 2;
 }
 function init() {
@@ -394,6 +399,7 @@ function init() {
   fetch("/api/config/defaults").then(r => r.json()).then(j => {
     if (!j.ok || !j.data) return;
     if (!$("c_hash").value) $("c_hash").value = j.data.hash_workers;
+    if (!$("cl_hash").value) $("cl_hash").value = j.data.hash_workers;
     if (!$("c_verify").value) $("c_verify").value = j.data.verify_workers;
   }).catch(() => {});
 }
@@ -442,7 +448,8 @@ $("btnCompress").onclick = () => {
 $("btnClean").onclick = () => {
   submitTask("/api/task/clean", {
     target_dir: $("cl_target").value.trim(),
-    preview: $("cl_preview").checked
+    preview: $("cl_preview").checked,
+    hash_workers: parseInt($("cl_hash").value) || undefined
   }, "msgClean");
 };
 $("btnDecompress").onclick = () => {

@@ -182,6 +182,7 @@ class TaskManager:
                 deleted = dedup_clean.dedup_clean(
                     cfg["target_dir"], preview=cfg.get("preview", True),
                     log_cb=log_cb, stop_event=stop_event,
+                    hash_workers=cfg.get("hash_workers"),
                 )
                 result = {"deleted": deleted}
                 status = "stopped" if stop_event.is_set() else "finished"
@@ -361,7 +362,11 @@ class Handler(BaseHTTPRequestHandler):
 
     def _task_clean(self, body):
         target_dir = self._validate_dir("target_dir", body.get("target_dir"), "目标目录")
-        cfg = {"target_dir": target_dir, "preview": bool(body.get("preview", True))}
+        cfg = {
+            "target_dir": target_dir,
+            "preview": bool(body.get("preview", True)),
+            "hash_workers": int(body.get("hash_workers") or dedup_clean.default_hash_workers()),
+        }
         self._ok(TaskManager.submit("clean", cfg))
 
     def _task_decompress(self, body):

@@ -30,6 +30,20 @@ if not defined PY (
     exit /b 1
 )
 
+rem ---- ensure pywebview is installed (auto-install on demand) ----
+"%PY%" -c "import webview" >nul 2>nul
+if errorlevel 1 (
+    echo [SETUP] pywebview not found, installing dependencies ...
+    "%PY%" -m pip install --disable-pip-version-check pywebview
+    if errorlevel 1 (
+        echo.
+        echo [WARN] pywebview install failed. Falling back to browser mode.
+        echo        If you want the desktop window, install it manually with:
+        echo        %PY% -m pip install pywebview
+        echo.
+    )
+)
+
 echo ============================================
 echo   Compress Archive Tool
 echo   Starting, a browser window will open ...

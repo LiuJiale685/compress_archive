@@ -1,5 +1,4 @@
 import argparse
-import hashlib
 import os
 import re
 import shutil
@@ -11,6 +10,9 @@ from datetime import datetime
 from pathlib import Path
 from queue import Queue
 
+import hash_cache
+from hash_cache import compute_hash, default_hash_workers
+
 # ==================== 默认配置项 ====================
 DEFAULT_TARGET_DIR = r"F:\ll"  # 目标目录默认值，可用命令行参数覆盖
 DEFAULT_HASH_INDEX = True  # 是否启用哈希判重与索引入库，默认开启，可用 --no-hash-index 关闭
@@ -19,8 +21,8 @@ DEFAULT_BANDIZIP_DIR = r"C:\Program Files\Bandizip"
 DEFAULT_MAX_PACKAGE_SIZE = int(3.9 * 1024 * 1024 * 1024)
 DEFAULT_MAX_RETRY = 3  # 压缩失败最大重试次数
 DEFAULT_VERIFY_WORKERS = 2  # 校验线程数（跑 bz t 外部进程，属磁盘 I/O 型，少量即可）
-# 哈希计算为纯 CPU 密集任务，BLAKE2b-256 哈希计算线程按 CPU 核数自适应（上限 8 防过杀）
-DEFAULT_HASH_WORKERS = min(os.cpu_count() or 4, 8)
+# 哈希为纯 CPU 密集任务（BLAKE2b-256），线程数直接用 CPU 核数；探测失败退化 4（None or 4）
+DEFAULT_HASH_WORKERS = os.cpu_count() or 4
 
 # 内部 _TaskStopped 异常：用户请求停止时由核心循环抛出
 class _TaskStopped(Exception):
@@ -150,18 +152,6 @@ class DedupIndex:
             self._conn.close()
 
 
-def compute_hash(path):
-    """计算文件的 BLAKE2b-256 哈希"""
-    h = hashlib.blake2b(digest_size=32)
-    with open(path, "rb") as f:
-        while True:
-            chunk = f.read(1024 * 1024)
-            if not chunk:
-                break
-            h.update(chunk)
-    return h.hexdigest()
-
-
 def get_item_size(path):
     """获取文件或目录的大小"""
     if path.is_file():
@@ -174,30 +164,32 @@ def get_item_size(path):
 
 
 def get_items_sorted_by_ctime(source_dir, output_dir):
-    """收集目录下的文件和子目录（排除输出目录），按创建时间排序"""
+    """收集目录下的文件和子目录（排除输出目录与临时 hash 缓存），按创建时间排序"""
     items = []
     output_path = Path(output_dir)
     for entry in os.scandir(source_dir):
         p = Path(entry.path)
         if p == output_path:
             continue
+        if entry.name.endswith(hash_cache.HASH_CACHE_SUFFIX):
+            continue  # 临时 hash 缓存不参与打包
         items.append(p)
     items.sort(key=lambda p: p.stat().st_ctime)
     return items
 
 
-def dedup_filter(items, index_snapshot, target_dir, hash_workers, log_cb=None):
+def dedup_filter(items, index_snapshot, target_dir, hash_workers, cache=None):
     """
-    判重过滤：
+    判重过滤（能力复用：优先读取清理阶段产出的临时 hash 缓存，仅对缺失文件现场补算）：
     - 顶层文件按文件级判重；顶层目录按目录级判重（内部文件全部已打包才整目录跳过）
-    - 元数据(路径+大小+mtime)与索引一致后再比 BLAKE2b 哈希确认
+    - 只比对内容 BLAKE2b-256 哈希与索引记录，不再比文件大小/名称/mtime
 
     返回 (pack_items, item_snapshots, residual_items)
     pack_items:      需要打包的条目（保持原 ctime 顺序）
     item_snapshots:  {item: [(rel_path, size, mtime_ns, hash)]}，校验通过后写索引用
     residual_items:  已确认打包但仍残留在磁盘的条目（调用方负责清理）
     """
-    log = log_cb or _LOG_CB
+    log = _LOG_CB
     item_files = {}
     for item in items:
         if item.is_dir():
@@ -205,72 +197,51 @@ def dedup_filter(items, index_snapshot, target_dir, hash_workers, log_cb=None):
         else:
             item_files[item] = [item]
 
-    file_info = {}      # path -> (rel, size, mtime_ns, expected_hash or None)
-    confirm_items = []  # 元数据全部匹配，待哈希确认的 item
-    pack_set = set()    # 元数据阶段已确定要打包的 item
+    # 合并所有文件，按 rel_path 收集当前真实对象
+    current_files = {}   # rel -> Path
+    for item, files in item_files.items():
+        for f in files:
+            rel = f.relative_to(target_dir).as_posix()
+            current_files[rel] = f
 
+    # 从临时 hash 缓存(可选)取 hue：优先复用，缺失的现场补算
+    cached = cache or {}
+    need_compute = [rel for rel in current_files if rel not in cached]
+    computed = hash_cache.compute_missing(
+        current_files, need_compute, log_cb=log, workers=hash_workers
+    ) if need_compute else {}
+    hashes = {}          # rel -> hex，失败为 None
+    for rel in current_files:
+        if rel in cached:
+            hashes[rel] = cached[rel]["h"]
+        elif rel in computed:
+            hashes[rel] = computed[rel]["h"]
+        else:
+            hashes[rel] = None
+
+    # 按内容哈希与索引比对判重
+    residual_items = []
+    pack_set = set()
+    item_snapshots = {}
     for item, files in item_files.items():
         if not files:
             pack_set.add(item)  # 空目录不做判重，直接打包
             continue
-        all_match = True
-        for f in files:
-            st = f.stat()
-            rel = f.relative_to(target_dir).as_posix()
-            rec = index_snapshot.get(rel)
-            if rec and rec[0] == st.st_size and rec[1] == st.st_mtime_ns:
-                file_info[f] = (rel, st.st_size, st.st_mtime_ns, rec[2])
-            else:
-                file_info[f] = (rel, st.st_size, st.st_mtime_ns, None)
-                all_match = False
-        if all_match:
-            confirm_items.append(item)
-        else:
-            pack_set.add(item)
-
-    # 并行计算哈希：待打包文件需要哈希写索引，待确认文件需要哈希比对
-    files_to_hash = list(file_info.keys())
-    total = len(files_to_hash)
-    hashes = {}  # path -> hex，失败为 None
-    if total:
-        log(f"正在计算哈希进行判重，共 {total} 个文件...")
-        done = 0
-        with ThreadPoolExecutor(max_workers=hash_workers) as pool:
-            futures = {pool.submit(compute_hash, f): f for f in files_to_hash}
-            for fut in as_completed(futures):
-                f = futures[fut]
-                try:
-                    hashes[f] = fut.result()
-                except Exception as e:
-                    hashes[f] = None
-                    safe_print(f"    哈希计算失败: {f} ({e})")
-                done += 1
-                if done % 100 == 0 or done == total:
-                    safe_print(f"    哈希进度: {done}/{total}")
-
-    # 待确认条目：全部文件哈希一致才算已打包，否则整目录重新打包
-    residual_items = []
-    for item in confirm_items:
-        files = item_files[item]
-        if any(hashes.get(f) is None for f in files):
+        rels = [f.relative_to(target_dir).as_posix() for f in files]
+        if any(hashes.get(r) is None for r in rels):
             safe_print(f"    跳过: {item.name} 存在无法读取的文件，本轮不处理")
             continue
-        if all(hashes[f] == file_info[f][3] for f in files):
+        if all(hashes[r] == (index_snapshot.get(r) or (None, None, None))[2] for r in rels):
+            # 目录内全部文件的哈希都能在索引中找到且一致 -> 已打包
             residual_items.append(item)
-        else:
-            pack_set.add(item)
-
-    # 生成待打包条目的索引快照；含读取失败文件的条目本轮跳过
-    item_snapshots = {}
-    for item in pack_set:
-        files = item_files[item]
-        if files and any(hashes.get(f) is None for f in files):
-            safe_print(f"    跳过: {item.name} 存在无法读取的文件，本轮不处理")
             continue
-        item_snapshots[item] = [
-            (file_info[f][0], file_info[f][1], file_info[f][2], hashes[f])
-            for f in files
-        ]
+        # 需要打包：把该条目的索引快照记下来（供校验通过后写索引）
+        st_list = []
+        for f, r in zip(files, rels):
+            st = f.stat()
+            st_list.append((r, st.st_size, st.st_mtime_ns, hashes[r]))
+        pack_set.add(item)
+        item_snapshots[item] = st_list
 
     pack_items = [item for item in items if item in item_snapshots]
     return pack_items, item_snapshots, residual_items
@@ -569,13 +540,18 @@ def run_compress(cfg, log_cb=_default_log_cb, stop_event=None):
     log(f"正在扫描并按创建时间排序，共找到 {len(items)} 个项目...")
 
     index = DedupIndex(index_db) if enable_hash_index else None
+    # 清理阶段的临时 hash 缓存（能力复用：压缩直接读取，缺口现场补算）
+    cache_file = hash_cache.cache_path(target_dir)
+    cache = hash_cache.load_cache(cache_file)
+    if cache:
+        log(f"复用清理阶段哈希缓存 {len(cache)} 条: {cache_file}")
     try:
         if index is not None:
             index_snapshot = index.load_all()
             log(f"判重索引已有 {len(index_snapshot)} 条记录")
 
             pack_items, item_snapshots, residual_items = dedup_filter(
-                items, index_snapshot, target_path, hash_workers
+                items, index_snapshot, target_path, hash_workers, cache=cache
             )
         else:
             log("哈希判重与索引入库已关闭，跳过判重，全部项目参与打包")
@@ -685,6 +661,13 @@ def run_compress(cfg, log_cb=_default_log_cb, stop_event=None):
     finally:
         if index is not None:
             index.close()
+        # 临时 hash 缓存已被压缩阶段消费（判重），用完即删，避免长期残留
+        try:
+            if os.path.exists(cache_file):
+                os.remove(cache_file)
+                log(f"已清理临时 hash 缓存: {cache_file}")
+        except OSError:
+            pass
 
     return result
 
